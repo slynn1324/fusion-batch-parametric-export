@@ -1,0 +1,12 @@
+{
+	"autodeskProduct":	"Fusion",
+	"type":	"script",
+	"author": "Andrew Tch (andrew.tchircoff@gmail.com)",
+	"description":	{
+		"":	""
+	},
+	"version":	"0.1",
+	"supportedOS":	"windows|mac",
+	"editEnabled":	true,
+	"iconFilename":	"ScriptIcon.svg"
+}
