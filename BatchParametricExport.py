@@ -13,6 +13,7 @@ CMD_DESC = 'Select bodies and components to export and process them using all pa
 _param_registry = {}  # key: chk_id -> {'param': adsk.fusion.UserParameter, 'text_id': str}
 
 _SIMPLE_LITERAL_RE = re.compile(r'^\s*([-+]?\d+(?:\.\d+)?)\s*([A-Za-z%°/]+)?\s*$')
+_TEXT_LITERAL_RE = re.compile( r'^\s*\'([^\']*)\'\s*$' )# re.compile(r'^\s*\'(.+?)\'\s*$')
 
 # --- filename template wiring ---
 FORMAT_ID = 'outFormat'
@@ -58,7 +59,7 @@ def run(context):
                     fmt = inputs.addDropDownCommandInput(FORMAT_ID, 'Output format',
                                                         adsk.core.DropDownStyles.TextListDropDownStyle)
                     for opt in ('STEP', 'STL', '3MF', 'OBJ'):
-                        fmt.listItems.add(opt, opt == 'OBJ', '')  # default OBJ selected
+                        fmt.listItems.add(opt, opt == 'STL', '')  # default STL selected
 
                     # --- NEW: filename template input ---
                     tmpl = inputs.addStringValueInput(FILENAME_ID, 'Filename template', '')
@@ -115,7 +116,12 @@ def run(context):
         class ValidateHandler(adsk.core.ValidateInputsEventHandler):
             def notify(self, args: adsk.core.ValidateInputsEventArgs):
                 try:
-                    ok, msg = _validate_all(args.inputs)
+                    design = adsk.fusion.Design.cast(_app.activeProduct)
+                    if not design:
+                        _app.log('[BatchExport] No active design.')
+                        return
+
+                    ok, msg = _validate_all(args.inputs, design)
                     args.areInputsValid = ok
                     # Optional: show inline error text (no popups)
                     err = adsk.core.TextBoxCommandInput.cast(args.inputs.itemById('inline_error'))
@@ -139,8 +145,9 @@ def run(context):
 
                     inputs = args.command.commandInputs
 
-                    objects = _get_selected_objects(inputs)                     # [(kind, ref, name), ...]
-                    sel_param_names, param_values = _get_selected_params_and_values(inputs)
+                    objects = _get_selected_objects(inputs, design)                     # [(kind, ref, name), ...]
+                    
+                    sel_param_names, param_values = _get_selected_params_and_values(inputs, design)
                     fmt = adsk.core.DropDownCommandInput.cast(inputs.itemById(FORMAT_ID))
                     fmt_name = fmt.selectedItem.name if (fmt and fmt.selectedItem) else 'OBJ'
                     ext = _EXT_MAP.get(fmt_name, 'obj')
@@ -204,6 +211,8 @@ def run(context):
                         _restore_visibility(design, orig_body_vis, orig_occ_vis)
                         _compute(design)
 
+                        adsk.terminate()
+
                 except Exception as ex:
                     _ui.messageBox('Execute failed:\n{}'.format(traceback.format_exc()))
 
@@ -240,6 +249,9 @@ def run(context):
                             if sv:
                                 sv.value = folder
                             _last_folder = folder
+
+                    
+                            
                         # reset so button can be clicked again
                         inp.value = False
 
@@ -257,7 +269,8 @@ def run(context):
     except:
         if _ui:
             _ui.messageBox('Add-in run failed:\n{}'.format(traceback.format_exc()))
-
+            adsk.terminate()
+            
 
 def _updateFilenameTemplate():
     if _current_inputs is None:
@@ -324,7 +337,7 @@ def _createObjectsTable(inputs: adsk.core.CommandInputs):
     for i in range(root.bRepBodies.count):
         b = root.bRepBodies.item(i)
         chk_id = f'chk_body_{i}'
-        chk = inputs.addBoolValueInput(chk_id, '', True, '', True)
+        chk = inputs.addBoolValueInput(chk_id, '', True, '', b.isVisible)
         lbl = inputs.addTextBoxCommandInput(f'lbl_body_{i}', '', f'[Body] {b.name}', 1, True)
         table.addCommandInput(chk, row, 0)
         table.addCommandInput(lbl, row, 1)
@@ -347,6 +360,9 @@ def _createObjectsTable(inputs: adsk.core.CommandInputs):
 
 def _is_simple_literal(expr: str) -> bool:
     return bool(expr and _SIMPLE_LITERAL_RE.match(expr))
+
+def _is_text_literal(expr: str) -> bool:
+    return bool(expr and _TEXT_LITERAL_RE.match(expr))
 
 def _format_expr_2dec(expr: str) -> str:
     """
@@ -395,7 +411,7 @@ def _createParametersTable(inputs: adsk.core.CommandInputs):
     row = 0
     for i in range(ups.count):
         p = ups.item(i)
-        if not _is_simple_literal(p.expression):
+        if not _is_simple_literal(p.expression) and not _is_text_literal(p.expression):
             continue
 
         base = _safe_id(p.name)
@@ -404,7 +420,7 @@ def _createParametersTable(inputs: adsk.core.CommandInputs):
         val_id  = f'lbl_value_{base}'
         txt_id  = f'txt_values_{base}'
 
-        chk = inputs.addBoolValueInput(chk_id, '', True, '', True)
+        chk = inputs.addBoolValueInput(chk_id, '', True, '', False)
         tbl.addCommandInput(chk, row, 0)
 
         name_lbl = inputs.addTextBoxCommandInput(name_id, '', p.name, 1, True)
@@ -443,7 +459,7 @@ def _createOutputFolderPicker(inputs: adsk.core.CommandInputs):
     browseBtn = inputs.addBoolValueInput(OUTPUT_BROWSE_ID, 'Browse…', False, '', False)
     tbl.addCommandInput(browseBtn, 0, 1)
 
-def _get_selected_objects(inputs: adsk.core.CommandInputs):
+def _get_selected_objects(inputs: adsk.core.CommandInputs, design: adsk.fusion.Design):
     """Return list of tuples: [('body'|'component', obj, display_name)] based on table checkboxes."""
     selected = []
     for chk_id, (kind, ref) in _item_registry.items():
@@ -455,6 +471,8 @@ def _get_selected_objects(inputs: adsk.core.CommandInputs):
                 comp = getattr(ref, 'component', None)
                 name = getattr(comp, 'name', 'Component')
             selected.append((kind, ref, name))
+
+    
     return selected
 
 def _parse_values_list(raw: str):
@@ -470,13 +488,53 @@ def _parse_values_list(raw: str):
         raise ValueError('no numbers')
     return vals
 
-def _get_selected_params_and_values(inputs: adsk.core.CommandInputs):
+def _parse_text_values_list(raw: str):
+    # split raw by semicolon, but only when we're outside of quotes
+    vals = []
+    if not raw:
+        raise ValueError('empty')
+    
+    # Split by semicolons that are outside of single quotes
+    parts = []
+    current_part = ""
+    in_quotes = False
+    i = 0
+    
+    while i < len(raw):
+        char = raw[i]
+        if char == "'" and (i == 0 or raw[i-1] != "\\"):
+            in_quotes = not in_quotes
+            current_part += char
+        elif char == ";" and not in_quotes:
+            parts.append(current_part)
+            current_part = ""
+        else:
+            current_part += char
+        i += 1
+    
+    if current_part:
+        parts.append(current_part)
+    
+    for tok in (t.strip() for t in parts):
+        if not tok:
+            continue
+        m = _TEXT_LITERAL_RE.match(tok)
+        if not m:
+            raise ValueError(f'bad text token: {tok}')
+        vals.append(m.group(1))
+    
+    if not vals:
+        raise ValueError('no text values')
+    return vals
+
+def _get_selected_params_and_values(inputs: adsk.core.CommandInputs, design: adsk.fusion.Design):
     """
     Returns:
       ordered_names: [ 'width', 'height', ... ] in UI order for checked items
       values_map: { 'width': [..floats..], ... }
     Raises ValueError on any unparseable list.
     """
+    ups = design.userParameters
     ordered_names = []
     values_map = {}
     # _param_order keeps UI row order
@@ -494,7 +552,18 @@ def _get_selected_params_and_values(inputs: adsk.core.CommandInputs):
         chk = adsk.core.BoolValueCommandInput.cast(inputs.itemById(chk_id))
         if chk and chk.value:
             txt = adsk.core.StringValueCommandInput.cast(inputs.itemById(text_id))
-            vals = _parse_values_list((txt.value or '').strip())
+            _app.log(f"[BatchExport] Processing parameter '{pname}' with input values: '{(txt.value or '').strip()}'")
+            upsItem = ups.itemByName(pname)
+            if not upsItem:
+                _app.log(f"[BatchExport] Warning: Parameter '{pname}' not found in design.")
+            if ( upsItem.valueType == 1 ):   # text
+                _app.log(f"[BatchExport] Parameter '{pname}' is of type text.")
+                vals = _parse_text_values_list((txt.value or '').strip())
+                _app.log("[BatchExport] Parsed text values for parameter '{}': {}".format(pname, vals))
+            else:
+                _app.log(f"[BatchExport] Parameter '{pname}' is of type number.")
+                vals = _parse_values_list((txt.value or '').strip())
+            
             ordered_names.append(pname)
             values_map[pname] = vals
     return ordered_names, values_map
@@ -529,17 +598,17 @@ def _normalize_path(p: str) -> str:
     # strip quotes/spaces, expand ~, resolve . and ..
     return os.path.normpath(os.path.expanduser(p.strip().strip('"').strip("'")))
 
-def _validate_all(inputs: adsk.core.CommandInputs):
+def _validate_all(inputs: adsk.core.CommandInputs, design: adsk.fusion.Design):
     # objects
-    objs = _get_selected_objects(inputs)
+    objs = _get_selected_objects(inputs, design)
     if not objs:
         return False, 'Select at least one body or component.'
 
     # params
     try:
-        sel_param_names, param_values = _get_selected_params_and_values(inputs)
+        sel_param_names, param_values = _get_selected_params_and_values(inputs, design)
     except ValueError:
-        return False, 'All selected parameters must have semicolon-separated numeric values.'
+        return False, 'All selected parameters must have semicolon-separated constant values.'
     if not sel_param_names:
         return False, 'Select at least one parameter.'
 
@@ -576,7 +645,11 @@ def _set_user_params(design, name_to_values_dict, values_tuple, ordered_names, o
         if pname not in originals_cache:
             originals_cache[pname] = up.expression  # keep original string
         unit = (up.unit or '').strip()
-        up.expression = f'{pval} {unit}'.strip()
+        if (up.valueType == 1):  # text
+            _app.log(f"[BatchExport] Setting text parameter '{pname}' to '{pval.strip()}'")
+            up.expression = pval.strip()
+        else:
+            up.expression = f'{pval} {unit}'.strip()
     return True
 
 def _restore_user_params(design, originals_cache):
