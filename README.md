@@ -17,10 +17,11 @@ Add the script folder to Fusion, run the script, then:
 # Implementation details
 
 - only non-computable parameters are supported and displayed in the interface (2mm works; 19/param3*3.14 does not)
+- text parameters work (Fusion Sep-2025+).  "'dog';'cat';'bob';'sue'". 
 - absolute path is not required, relative (~/Documents) may fail
+
 
 # Todo
 
 - add trigger button to Utilities panel
-- auto terminate after completin
 - better error processing
