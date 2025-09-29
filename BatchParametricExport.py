@@ -591,7 +591,7 @@ def _build_filename(template: str, obj_name: str, param_values_map: dict):
     name_safe = _sanitize_filename_component(obj_name)
     out = template.replace('{name}', name_safe)
     for pname, val in param_values_map.items():
-        out = out.replace(f'{{{pname}}}', f'{val}')
+        out = out.replace(f'{{{pname}}}', f'{_sanitize_filename_component(val)}')
     return out
 
 def _normalize_path(p: str) -> str:
@@ -647,7 +647,7 @@ def _set_user_params(design, name_to_values_dict, values_tuple, ordered_names, o
         unit = (up.unit or '').strip()
         if (up.valueType == 1):  # text
             _app.log(f"[BatchExport] Setting text parameter '{pname}' to '{pval.strip()}'")
-            up.expression = pval.strip()
+            up.textValue = f"'{pval.strip()}'"
         else:
             up.expression = f'{pval} {unit}'.strip()
     return True
@@ -722,6 +722,7 @@ def _isolate_for_step(design, kind, ref):
 def _export_mesh(design, geometry, fullpath, fmt_name):
     em = design.exportManager
     fmt = fmt_name.upper()
+    _app.log("exporting format: '{}' path: '{}'".format(fmt, fullpath))
     if fmt == 'STL':
         # STL accepts Body/Occurrence/Component
         opts = em.createSTLExportOptions(geometry, fullpath)
